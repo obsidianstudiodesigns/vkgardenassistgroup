@@ -11,10 +11,9 @@ const hint = document.getElementById('heroHint');
 const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const small = window.matchMedia('(max-width: 760px)').matches;
 
-// Sky photos to try, in order. Drop a CC0 .hdr at assets/sky.hdr to use your own.
+// CC0 sky photos from Poly Haven to try, in order; falls back to a physical sky
 const HDRI = small ? '1k' : '2k';
 const SKY_CANDIDATES = [
-  'assets/sky.hdr',
   ...['table_mountain_2_puresky', 'kloofendal_48d_partly_cloudy_puresky', 'kloofendal_43d_clear_puresky', 'qwantani_afternoon_puresky']
     .map(id => `https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/${HDRI}/${id}_${HDRI}.hdr`),
 ];
@@ -26,7 +25,8 @@ try {
   document.documentElement.classList.add('no-webgl');
   throw e;
 }
-const DPR = Math.min(window.devicePixelRatio, small ? 1.5 : 1.75);
+// Phones render at 1x and drop further if frames run slow (see adaptive quality in the loop)
+let DPR = Math.min(window.devicePixelRatio, small ? 1.25 : 1.75);
 renderer.setPixelRatio(DPR);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -72,7 +72,7 @@ const sunLight = new THREE.DirectionalLight(0xffffff, 1);
 scene.add(sunLight);
 
 /* ---------- Grass blades ---------- */
-const BLADES = small ? 32000 : 95000;
+const BLADES = small ? 20000 : 95000;
 const offsets = new Float32Array(BLADES * 3);
 const shape = new Float32Array(BLADES * 4); // rotation, height, width, seed
 const cuts = new Float32Array(BLADES).fill(1);
@@ -86,7 +86,7 @@ const scatter = aspect => {
     const x = (Math.random() * 2 - 1) * (d + 0.6) * hw;
     offsets[i * 3] = x;
     offsets[i * 3 + 2] = CAM.z - d;
-    const far = 1 + d * 0.11;
+    const far = (1 + d * 0.11) * (small ? 1.35 : 1); // fewer, slightly wider blades on phones
     const seed = Math.random();
     shape[i * 4] = Math.random() * Math.PI * 2;
     shape[i * 4 + 1] = (0.085 + Math.random() * 0.075) * (seed > 0.96 ? 1.35 : 1);
@@ -378,7 +378,7 @@ const leafMat = new THREE.ShaderMaterial({
     }`,
 });
 
-const PER_TIP = small ? 12 : 20;
+const PER_TIP = small ? 8 : 20;
 const leaves = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.6, 0.6), leafMat, tips.length * PER_TIP);
 {
   const m = new THREE.Object3D();
@@ -457,7 +457,7 @@ const postGeo = new THREE.BufferGeometry();
 postGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
 postGeo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 2, 0, 0, 2], 2));
 const postMat = new THREE.ShaderMaterial({
-  defines: { TAPS: small ? 12 : 28 },
+  defines: { TAPS: small ? 0 : 28 }, // lens blur is desktop-only; phones keep grain, vignette and tone mapping
   uniforms: {
     tColor: { value: rt.texture }, tDepth: { value: rt.depthTexture },
     uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: camera.near }, uFar: { value: camera.far },
@@ -471,8 +471,9 @@ const postMat = new THREE.ShaderMaterial({
     float lin(float z) { float n = z * 2.0 - 1.0; return 2.0 * uNear * uFar / (uFar + uNear - n * (uFar - uNear)); }
     float coc(vec2 uv) { float d = lin(texture2D(tDepth, uv).r); return clamp(abs(d - uFocus) / d * uAperture, 0.0, uMaxBlur); }
     void main() {
-      float c = coc(vUv);
       vec3 acc = texture2D(tColor, vUv).rgb; float ws = 1.0;
+      #if TAPS > 0
+      float c = coc(vUv);
       for (int i = 0; i < TAPS; i++) {
         float fi = float(i) + 0.5;
         float r = sqrt(fi / float(TAPS));
@@ -482,6 +483,7 @@ const postMat = new THREE.ShaderMaterial({
         float w = clamp(sc - r * c + 1.0, 0.0, 1.0);
         acc += texture2D(tColor, suv).rgb * w; ws += w;
       }
+      #endif
       vec3 col = acc / ws;
       vec2 q = vUv - 0.5;
       col *= 1.0 - dot(q, q) * 0.6;
@@ -505,15 +507,18 @@ const DESIRED_SUN_AZ = -Math.PI / 2 + 0.55; // ahead and to the right, so the la
 
 const useHdr = tex => {
   const { data, width: W, height: Hh } = tex.image;
+  // Half-float pixels (filterable on phones) are decoded here just for analysis
+  const px = data instanceof Uint16Array ? k => THREE.DataUtils.fromHalfFloat(data[k]) : k => data[k];
   // Find the sun (brightest pixel) and the average sky and horizon colours
   let best = 0, bu = 0.5, bv = 0.7;
   const sky = [0, 0, 0], hor = [0, 0, 0];
   let skyN = 0, horN = 0;
-  for (let y = 0; y < Hh; y += 2) {
+  const step = small ? 3 : 2;
+  for (let y = 0; y < Hh; y += step) {
     const v = 1 - (y + 0.5) / Hh;
-    for (let x = 0; x < W; x += 2) {
+    for (let x = 0; x < W; x += step) {
       const i = (y * W + x) * 4;
-      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const r = px(i), g = px(i + 1), b = px(i + 2);
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       if (lum > best) { best = lum; bu = (x + 0.5) / W; bv = v; }
       if (v > 0.55 && lum < 8) { sky[0] += r; sky[1] += g; sky[2] += b; skyN++; }
@@ -527,8 +532,9 @@ const useHdr = tex => {
   if (scene.environmentRotation) scene.environmentRotation.set(0, -rotY, 0);
   light.sunDir.set(Math.cos(DESIRED_SUN_AZ) * Math.cos(lat), Math.max(Math.sin(lat), 0.12), Math.sin(DESIRED_SUN_AZ) * Math.cos(lat)).normalize();
   const i = (Math.floor((1 - bv) * Hh) * W + Math.floor(bu * W)) * 4;
-  const sm = Math.max(data[i], data[i + 1], data[i + 2], 1e-3);
-  light.sunColor.setRGB(data[i] / sm, data[i + 1] / sm, data[i + 2] / sm).multiplyScalar(2.6);
+  const sr = px(i), sg = px(i + 1), sb = px(i + 2);
+  const sm = Math.max(sr, sg, sb, 1e-3);
+  light.sunColor.setRGB(sr / sm, sg / sm, sb / sm).multiplyScalar(2.6);
   if (skyN) light.skyColor.setRGB(sky[0] / skyN, sky[1] / skyN, sky[2] / skyN).multiplyScalar(1.1);
   if (horN) light.fogColor.setRGB(hor[0] / horN, hor[1] / horN, hor[2] / horN);
 
@@ -555,7 +561,8 @@ const usePhysicalSky = () => {
 };
 
 const loadSky = async () => {
-  const loader = new RGBELoader().setDataType(THREE.FloatType);
+  // Half float, not full float: many phone GPUs can't filter 32-bit float textures and draw them black
+  const loader = new RGBELoader().setDataType(THREE.HalfFloatType);
   for (const url of SKY_CANDIDATES) {
     try {
       const tex = await Promise.race([
@@ -628,19 +635,37 @@ const mow = (ax, az, bx, bz) => {
 /* ---------- Loop ---------- */
 const clock = new THREE.Clock();
 let time = 0, paused = false, ready = false;
+// Adaptive quality: after warm-up, if frames average slower than ~40fps, lower the render resolution
+let perfFrames = -30, perfTime = 0, perfSettled = false;
+const checkPerf = raw => {
+  if (perfSettled) return;
+  if (++perfFrames <= 0) return;
+  perfTime += raw;
+  if (perfFrames < 45) return;
+  const avg = perfTime / perfFrames;
+  perfFrames = 0; perfTime = 0;
+  if (avg > 1 / 40 && DPR > 0.6) {
+    DPR = Math.max(0.6, DPR * 0.8);
+    renderer.setPixelRatio(DPR);
+    resize();
+  } else perfSettled = true;
+};
 const frame = () => {
   requestAnimationFrame(frame);
   if (!ready) return;
   if (document.hidden || window.scrollY > hero.offsetHeight + 40) { paused = true; return; }
   if (paused) { paused = false; clock.getDelta(); }
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const raw = clock.getDelta();
+  checkPerf(raw);
+  const dt = Math.min(raw, 0.05);
   if (!reduce) time += dt;
 
   // Camera: still, with a breath of parallax; scrolling lifts it like a drone
   const prog = Math.min(1, window.scrollY / Math.max(1, hero.clientHeight));
   const px = reduce ? 0 : ndc.x * 0.05, py = reduce ? 0 : ndc.y * 0.025;
   camera.position.set(CAM.x + px, CAM.y + py + prog * 1.4, CAM.z - prog * 0.6);
-  camera.lookAt(LOOK.x, LOOK.y - prog * 1.2, LOOK.z);
+  // Portrait tilts down so the lawn, not the sky, fills the tall screen
+  camera.lookAt(LOOK.x, (camera.aspect < 1 ? -0.84 : LOOK.y) - prog * 1.2, LOOK.z);
   camera.updateMatrixWorld();
 
   // Mowing
