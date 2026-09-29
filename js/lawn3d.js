@@ -20,13 +20,16 @@ const SKY_CANDIDATES = [
 
 let renderer;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+  // Phones draw straight to the screen with the GPU's own (cheap, tile-based) MSAA;
+  // desktops render off-screen for depth of field and grain.
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: small, powerPreference: 'high-performance' });
 } catch (e) {
   document.documentElement.classList.add('no-webgl');
   throw e;
 }
 // Phones render at 1x and drop further if frames run slow (see adaptive quality in the loop)
-let DPR = Math.min(window.devicePixelRatio, small ? 1.25 : 1.75);
+const USE_POST = !small;
+let DPR = Math.min(window.devicePixelRatio, 1.75);
 renderer.setPixelRatio(DPR);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -330,6 +333,7 @@ tips.forEach(t => {
 
 const leafMat = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
+  alphaToCoverage: true, // MSAA-smoothed leaf edges instead of hard, stair-stepped cut-outs
   uniforms: {
     uMap: { value: leafTex }, uTime: { value: 0 },
     uCenter: { value: new THREE.Vector3() }, uRadii: { value: radii },
@@ -358,7 +362,8 @@ const leafMat = new THREE.ShaderMaterial({
     varying vec2 vUv; varying vec3 vPos; varying vec3 vCardN; varying vec3 vCanopyN; varying float vHue;
     void main() {
       vec4 tx = texture2D(uMap, vUv);
-      if (tx.a < 0.32) discard; // low cutoff so distant mipmaps don't thin the canopy
+      if (tx.a < 0.08) discard;
+      float cover = smoothstep(0.12, 0.42, tx.a); // soft edge; low range so distant mipmaps don't thin the canopy
       vec3 V = normalize(uCamPos - vPos);
       vec3 L = normalize(uSunDir);
       vec3 cn = gl_FrontFacing ? vCardN : -vCardN;
@@ -372,7 +377,7 @@ const leafMat = new THREE.ShaderMaterial({
       vec3 col = albedo * amb + albedo * uSunColor * (ndl * 0.9 + trans * 1.6) * occl;
       float dist = length(uCamPos - vPos);
       col = mix(col, uFogColor, 1.0 - exp(-uFogDensity * uFogDensity * dist * dist));
-      gl_FragColor = vec4(col, 1.0);
+      gl_FragColor = vec4(col, cover);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
     }`,
@@ -451,15 +456,15 @@ const spawnClip = (x, z, dx, dz) => {
 };
 
 /* ---------- Post: depth of field, vignette, grain, tone mapping ---------- */
-const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: small ? 2 : 4 });
-rt.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
+const rt = USE_POST ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }) : null;
+if (rt) rt.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
 const postGeo = new THREE.BufferGeometry();
 postGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
 postGeo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 2, 0, 0, 2], 2));
 const postMat = new THREE.ShaderMaterial({
   defines: { TAPS: small ? 0 : 28 }, // lens blur is desktop-only; phones keep grain, vignette and tone mapping
   uniforms: {
-    tColor: { value: rt.texture }, tDepth: { value: rt.depthTexture },
+    tColor: { value: rt && rt.texture }, tDepth: { value: rt && rt.depthTexture },
     uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: camera.near }, uFar: { value: camera.far },
     uFocus: { value: 3.2 }, uAperture: { value: 3.5 }, uMaxBlur: { value: 3.5 }, uTime: { value: 0 },
   },
@@ -586,8 +591,10 @@ const resize = () => {
   camera.fov = camera.aspect < 1 ? 46 : 32;
   camera.updateProjectionMatrix();
   placeTree();
-  rt.setSize(Math.floor(W * DPR), Math.floor(H * DPR));
-  postMat.uniforms.uRes.value.set(W * DPR, H * DPR);
+  if (rt) {
+    rt.setSize(Math.floor(W * DPR), Math.floor(H * DPR));
+    postMat.uniforms.uRes.value.set(W * DPR, H * DPR);
+  }
 };
 resize();
 new ResizeObserver(resize).observe(hero);
@@ -635,8 +642,10 @@ const mow = (ax, az, bx, bz) => {
 /* ---------- Loop ---------- */
 const clock = new THREE.Clock();
 let time = 0, paused = false, ready = false;
-// Adaptive quality: after warm-up, if frames average slower than ~40fps, lower the render resolution
-let perfFrames = -30, perfTime = 0, perfSettled = false;
+// Adaptive quality: after warm-up, if frames average slower than ~40fps, step down.
+// Resolution never drops below 1x (that's what made the grass look pixelated); after that
+// it thins the grass and leaves, and as a last resort caps the frame rate at 30.
+let perfFrames = -30, perfTime = 0, perfSettled = false, fpsCap = false, lastDraw = 0, thinned = false;
 const checkPerf = raw => {
   if (perfSettled) return;
   if (++perfFrames <= 0) return;
@@ -644,17 +653,30 @@ const checkPerf = raw => {
   if (perfFrames < 45) return;
   const avg = perfTime / perfFrames;
   perfFrames = 0; perfTime = 0;
-  if (avg > 1 / 40 && DPR > 0.6) {
-    DPR = Math.max(0.6, DPR * 0.8);
+  if (avg <= 1 / 40) { perfSettled = true; return; }
+  if (DPR > 1) {
+    DPR = Math.max(1, DPR * 0.85);
     renderer.setPixelRatio(DPR);
     resize();
-  } else perfSettled = true;
+  } else if (!thinned) {
+    thinned = true;
+    grassGeo.instanceCount = Math.floor(BLADES * 0.65);
+    leaves.count = Math.floor(leaves.count * 0.6);
+  } else {
+    fpsCap = true;
+    perfSettled = true;
+  }
 };
 const frame = () => {
   requestAnimationFrame(frame);
   if (!ready) return;
   if (document.hidden || window.scrollY > hero.offsetHeight + 40) { paused = true; return; }
   if (paused) { paused = false; clock.getDelta(); }
+  if (fpsCap) {
+    const now = performance.now();
+    if (now - lastDraw < 1000 / 31) return;
+    lastDraw = now;
+  }
   const raw = clock.getDelta();
   checkPerf(raw);
   const dt = Math.min(raw, 0.05);
@@ -712,10 +734,14 @@ const frame = () => {
   grassMat.uniforms.uTime.value = time;
   leafMat.uniforms.uTime.value = time;
   postMat.uniforms.uTime.value = time;
-  renderer.setRenderTarget(rt);
-  renderer.render(scene, camera);
-  renderer.setRenderTarget(null);
-  renderer.render(postScene, postCam);
+  if (USE_POST) {
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.render(postScene, postCam);
+  } else {
+    renderer.render(scene, camera);
+  }
 };
 
 scene.fog = new THREE.FogExp2(light.fogColor, 0.016);

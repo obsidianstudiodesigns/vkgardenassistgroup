@@ -175,16 +175,15 @@ button { font: inherit; color: inherit; }
   content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
   background: linear-gradient(90deg, color-mix(in srgb, var(--bg) 88%, transparent) 0%, color-mix(in srgb, var(--bg) 55%, transparent) 32%, transparent 58%);
 }
-@media (max-width: 760px) { .hero::after { display: none; } }
+/* Phones: the fade sits on the hero itself (not the sliding copy), so it never detaches on scroll */
+@media (max-width: 760px) {
+  .hero::after { background: linear-gradient(to bottom, transparent 42%, color-mix(in srgb, var(--bg) 70%, transparent) 58%, var(--bg) 74%); }
+}
 @media (hover: none) { .hero-hint { display: none; } }
 
 @media (max-width: 760px) {
   .hero { align-items: end; }
   .hero-copy { padding-bottom: 40px; padding-top: 52vh; }
-  .hero-copy::before {
-    content: ""; position: absolute; inset: 40% -16px -40px; z-index: -1;
-    background: linear-gradient(to bottom, transparent, var(--bg) 35%);
-  }
 }
 
 /* ---------- Section basics ---------- */
