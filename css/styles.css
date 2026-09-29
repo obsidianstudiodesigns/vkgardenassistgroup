@@ -83,7 +83,7 @@ button { font: inherit; color: inherit; }
 .btn:active { transform: translateY(1px) scale(.98); }
 .btn-primary { background: var(--jade-deep); color: #F1F5EA; }
 .btn-primary:hover { background: var(--ink); color: var(--bg); }
-.btn-ghost { border-color: currentColor; background: color-mix(in srgb, var(--bg) 55%, transparent); backdrop-filter: blur(8px); }
+.btn-ghost { border-color: currentColor; background: color-mix(in srgb, var(--bg) 70%, transparent); }
 .btn-ghost:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .btn-small { min-height: 40px; padding: 0 1.1em; font-size: .95rem; background: var(--ink); color: var(--bg); }
 .btn-small:hover { background: var(--jade-deep); color: #F1F5EA; }
@@ -96,9 +96,7 @@ button { font: inherit; color: inherit; }
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   padding: 0 12px 0 18px;
   border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
   border: 1px solid var(--line);
   transition: transform .45s var(--ease-out);
 }
@@ -162,8 +160,7 @@ button { font: inherit; color: inherit; }
   position: absolute; z-index: 2; right: max(16px, 4vw); bottom: 28px; margin: 0;
   display: flex; align-items: center; gap: 8px;
   padding: 8px 14px; border-radius: var(--r-pill);
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   font-size: .9rem; color: var(--ink-2);
   transition: opacity .6s;
 }

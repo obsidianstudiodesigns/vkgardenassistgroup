@@ -1,9 +1,8 @@
-// Ground-level lawn at golden hour: image-based sky, dense shaded grass, depth of field, grain.
+// Ground-level lawn: image-based sky, dense shaded grass, vignette and film grain.
 // The visitor's cursor is the mower: blades are cut and laid over in the direction of travel.
 import * as THREE from 'three';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { Sky } from 'three/addons/objects/Sky.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const canvas = document.getElementById('garden');
 const hero = document.querySelector('.hero');
@@ -14,7 +13,7 @@ const small = window.matchMedia('(max-width: 760px)').matches;
 // CC0 sky photos from Poly Haven to try, in order; falls back to a physical sky
 const HDRI = small ? '1k' : '2k';
 const SKY_CANDIDATES = [
-  ...['table_mountain_2_puresky', 'kloofendal_48d_partly_cloudy_puresky', 'kloofendal_43d_clear_puresky', 'qwantani_afternoon_puresky']
+  ...['kloofendal_48d_partly_cloudy_puresky', 'table_mountain_2_puresky', 'kloofendal_43d_clear_puresky', 'qwantani_afternoon_puresky']
     .map(id => `https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/${HDRI}/${id}_${HDRI}.hdr`),
 ];
 
@@ -126,12 +125,10 @@ const grassMat = new THREE.ShaderMaterial({
     uFogColor: { value: light.fogColor },
     uFogDensity: { value: 0.016 },
     uCamPos: { value: camera.position },
-    uTrunk: { value: new THREE.Vector2(99, 99) },
-    uShadow: { value: Array.from({ length: 10 }, () => new THREE.Vector4(0, -99, 0, 0)) },
   },
   vertexShader: /* glsl */`
     attribute vec3 aOffset; attribute vec4 aShape; attribute float aCut; attribute vec2 aLay;
-    uniform float uTime; uniform vec2 uWindDir; uniform vec3 uCursor; uniform vec2 uTrunk;
+    uniform float uTime; uniform vec2 uWindDir; uniform vec3 uCursor;
     varying vec3 vPos; varying vec3 vN; varying float vT; varying float vSeed; varying float vCut;
 
     float n2(vec2 p) { return sin(p.x * 1.7 + sin(p.y * 1.3)) * sin(p.y * 1.1 + sin(p.x * 0.9)); }
@@ -139,7 +136,6 @@ const grassMat = new THREE.ShaderMaterial({
     void main() {
       float t = uv.y;
       float rot = aShape.x, h = aShape.y * aCut, w = aShape.z, seed = aShape.w;
-      if (length(aOffset.xz - uTrunk) < 0.45) h = 0.0; // no blades growing through the trunk
       vec2 face = vec2(cos(rot), sin(rot));
       vec3 side = vec3(-face.y, 0.0, face.x);
 
@@ -166,26 +162,9 @@ const grassMat = new THREE.ShaderMaterial({
   fragmentShader: /* glsl */`
     uniform vec3 uSunDir; uniform vec3 uSunColor; uniform vec3 uSkyColor;
     uniform vec3 uFogColor; uniform float uFogDensity; uniform vec3 uCamPos;
-    uniform vec4 uShadow[10];
     varying vec3 vPos; varying vec3 vN; varying float vT; varying float vSeed; varying float vCut;
 
     float n2(vec2 p) { return sin(p.x * 0.9 + sin(p.y * 0.7)) * sin(p.y * 0.6 + sin(p.x * 1.3)); }
-
-    // Soft, dappled shadow of the oak: canopy and trunk approximated by spheres toward the sun
-    float treeShadow(vec3 p, vec3 L) {
-      float s = 1.0;
-      for (int i = 0; i < 10; i++) {
-        vec4 sp = uShadow[i];
-        vec3 oc = sp.xyz - p;
-        float tp = dot(oc, L);
-        if (tp > 0.0) {
-          float d = length(oc - L * tp);
-          s *= mix(0.2, 1.0, smoothstep(sp.w * 0.45, sp.w * 1.05, d));
-        }
-      }
-      float dap = sin(p.x * 3.1 + sin(p.z * 2.3)) * sin(p.z * 2.7 + sin(p.x * 1.9));
-      return clamp(s + max(dap, 0.0) * 0.3 * (1.0 - s), 0.0, 1.0);
-    }
 
     void main() {
       vec3 N = normalize(gl_FrontFacing ? vN : -vN);
@@ -210,9 +189,8 @@ const grassMat = new THREE.ShaderMaterial({
       float trans = pow(max(dot(V, -L), 0.0), 3.0) * vT * 0.9;
       vec3 amb = uSkyColor * (0.35 + 0.35 * N.y);
 
-      float sh = treeShadow(vPos, L);
-      vec3 col = albedo * (amb + uSunColor * ndl * 0.9 * sh) * ao
-               + uSunColor * (spec + trans * albedo * 2.2) * ao * sh;
+      vec3 col = albedo * (amb + uSunColor * ndl * 0.9) * ao
+               + uSunColor * (spec + trans * albedo * 2.2) * ao;
 
       float dist = length(uCamPos - vPos);
       float fog = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
@@ -225,217 +203,6 @@ const grassMat = new THREE.ShaderMaterial({
 const grass = new THREE.Mesh(grassGeo, grassMat);
 grass.frustumCulled = false;
 scene.add(grass);
-
-/* ---------- Oak tree ---------- */
-// Seeded random so the tree has the same shape on every visit
-const rand = (() => {
-  let s = 2018;
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-})();
-
-const tree = new THREE.Group();
-tree.rotation.y = 0.7;
-scene.add(tree);
-
-const barkTex = (() => {
-  const c = document.createElement('canvas'); c.width = 128; c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#6a5e52'; g.fillRect(0, 0, 128, 256);
-  for (let i = 0; i < 220; i++) {
-    const x = rand() * 128, w = 1 + rand() * 4;
-    g.fillStyle = rand() < 0.6 ? `rgba(30,24,20,${0.35 + rand() * 0.4})` : `rgba(150,140,125,${0.15 + rand() * 0.2})`;
-    g.fillRect(x, rand() * 256, w, 20 + rand() * 90);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(2, 1);
-  return t;
-})();
-const barkMat = new THREE.MeshStandardMaterial({ map: barkTex, bumpMap: barkTex, bumpScale: 3, roughness: 0.95, color: 0x9a8f82 });
-
-const UP = new THREE.Vector3(0, 1, 0);
-const limbGeos = [];
-const tips = [];
-const addSegment = (a, b, r0, r1) => {
-  const len = a.distanceTo(b);
-  const g = new THREE.CylinderGeometry(r1, r0, len, 9, 1, true).translate(0, len / 2, 0);
-  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, b.clone().sub(a).normalize()));
-  g.translate(a.x, a.y, a.z);
-  limbGeos.push(g);
-};
-const grow = (start, dir, len, rad, depth) => {
-  // Each limb is three slightly kinked segments; outer limbs droop like an old oak
-  let p = start.clone(), d = dir.clone(), r = rad;
-  const kink = depth === 0 ? 0.12 : 0.38;
-  for (let s = 0; s < 3; s++) {
-    d.add(new THREE.Vector3(rand() - 0.5, (rand() - 0.5) * 0.5, rand() - 0.5).multiplyScalar(kink));
-    if (depth > 2) d.y -= 0.04 * depth;
-    d.normalize();
-    const q = p.clone().addScaledVector(d, len / 3);
-    const rEnd = rad * (1 - ((s + 1) / 3) * 0.38);
-    addSegment(p, q, r, rEnd);
-    p = q; r = rEnd;
-    if (depth >= 2) tips.push(p.clone());
-  }
-  if (depth === 4) return;
-  const kids = depth === 0 ? 4 : 3;
-  for (let k = 0; k < kids; k++) {
-    const az = (k / kids) * Math.PI * 2 + rand() * 0.9;
-    const spread = depth === 0 ? 0.55 + rand() * 0.25 : 0.4 + rand() * 0.45;
-    const out = new THREE.Vector3(Math.cos(az), 0, Math.sin(az));
-    const nd = d.clone().multiplyScalar(Math.cos(spread)).addScaledVector(out, Math.sin(spread));
-    nd.y += depth === 0 ? 0.35 : depth === 1 ? 0.2 : 0.08;
-    grow(p, nd.normalize(), len * (depth === 0 ? 0.64 : 0.74), r * 0.62, depth + 1);
-  }
-};
-grow(new THREE.Vector3(0, 0, 0), UP.clone(), 2.1, 0.32, 0);
-limbGeos.push(new THREE.CylinderGeometry(0.33, 0.55, 0.45, 9, 1, true).translate(0, 0.22, 0)); // root flare
-tree.add(new THREE.Mesh(mergeGeometries(limbGeos), barkMat));
-
-// Leaf cards: a cluster of lobed oak leaves painted into one alpha texture
-const leafTex = (() => {
-  const c = document.createElement('canvas'); c.width = c.height = 128;
-  const g = c.getContext('2d');
-  for (let i = 0; i < 6; i++) {
-    g.save();
-    g.translate(24 + rand() * 80, 24 + rand() * 80);
-    g.rotate(rand() * Math.PI * 2);
-    const tone = 170 + Math.floor(rand() * 85);
-    g.fillStyle = `rgb(${tone},${tone},${tone})`;
-    g.beginPath(); g.ellipse(0, 0, 7, 17, 0, 0, Math.PI * 2); g.fill();
-    for (let l = -2; l <= 2; l++) {
-      g.beginPath(); g.arc(-7, l * 6, 5, 0, Math.PI * 2); g.arc(7, l * 6 + 3, 5, 0, Math.PI * 2); g.fill();
-    }
-    g.strokeStyle = 'rgba(60,60,60,.6)'; g.lineWidth = 1;
-    g.beginPath(); g.moveTo(0, -16); g.lineTo(0, 20); g.stroke();
-    g.restore();
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.generateMipmaps = true;
-  return t;
-})();
-
-const center = new THREE.Vector3();
-tips.forEach(t => center.add(t));
-center.divideScalar(tips.length);
-const radii = new THREE.Vector3(0.5, 0.5, 0.5);
-tips.forEach(t => {
-  radii.x = Math.max(radii.x, Math.abs(t.x - center.x) + 0.6);
-  radii.y = Math.max(radii.y, Math.abs(t.y - center.y) + 0.6);
-  radii.z = Math.max(radii.z, Math.abs(t.z - center.z) + 0.6);
-});
-
-const leafMat = new THREE.ShaderMaterial({
-  side: THREE.DoubleSide,
-  alphaToCoverage: true, // MSAA-smoothed leaf edges instead of hard, stair-stepped cut-outs
-  uniforms: {
-    uMap: { value: leafTex }, uTime: { value: 0 },
-    uCenter: { value: new THREE.Vector3() }, uRadii: { value: radii },
-    uSunDir: { value: light.sunDir }, uSunColor: { value: light.sunColor }, uSkyColor: { value: light.skyColor },
-    uFogColor: { value: light.fogColor }, uFogDensity: { value: 0.016 }, uCamPos: { value: camera.position },
-  },
-  vertexShader: /* glsl */`
-    uniform float uTime; uniform vec3 uCenter; uniform vec3 uRadii;
-    varying vec2 vUv; varying vec3 vPos; varying vec3 vCardN; varying vec3 vCanopyN; varying float vHue;
-    void main() {
-      vUv = uv;
-      vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
-      vec3 rel = wp.xyz - uCenter;
-      float sway = sin(uTime * 1.2 + wp.x * 0.8 + wp.y * 0.5) * 0.5 + sin(uTime * 2.3 + wp.z * 1.7) * 0.25;
-      wp.xyz += vec3(0.6, 0.15, 0.4) * sway * 0.035 * clamp(length(rel.xz) / 3.0, 0.2, 1.0);
-      vCardN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
-      vCanopyN = normalize(rel / uRadii);
-      vHue = fract(sin(dot(floor(wp.xyz * 2.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-      vPos = wp.xyz;
-      gl_Position = projectionMatrix * viewMatrix * wp;
-    }`,
-  fragmentShader: /* glsl */`
-    uniform sampler2D uMap;
-    uniform vec3 uSunDir; uniform vec3 uSunColor; uniform vec3 uSkyColor;
-    uniform vec3 uFogColor; uniform float uFogDensity; uniform vec3 uCamPos;
-    varying vec2 vUv; varying vec3 vPos; varying vec3 vCardN; varying vec3 vCanopyN; varying float vHue;
-    void main() {
-      vec4 tx = texture2D(uMap, vUv);
-      if (tx.a < 0.08) discard;
-      float cover = smoothstep(0.12, 0.42, tx.a); // soft edge; low range so distant mipmaps don't thin the canopy
-      vec3 V = normalize(uCamPos - vPos);
-      vec3 L = normalize(uSunDir);
-      vec3 cn = gl_FrontFacing ? vCardN : -vCardN;
-      vec3 N = normalize(mix(cn, vCanopyN, 0.6));
-      vec3 albedo = mix(vec3(0.05, 0.1, 0.02), vec3(0.13, 0.18, 0.04), vHue) * (0.6 + 0.6 * tx.r);
-      // Leaves deep inside or on the far side of the canopy get less sun
-      float occl = clamp(dot(vCanopyN, L) * 0.6 + 0.5, 0.1, 1.0);
-      float ndl = max(dot(N, L), 0.0);
-      float trans = pow(max(dot(V, -L), 0.0), 4.0) * 0.8;
-      vec3 amb = uSkyColor * (0.25 + 0.3 * vCanopyN.y) * (0.45 + 0.55 * occl);
-      vec3 col = albedo * amb + albedo * uSunColor * (ndl * 0.9 + trans * 1.6) * occl;
-      float dist = length(uCamPos - vPos);
-      col = mix(col, uFogColor, 1.0 - exp(-uFogDensity * uFogDensity * dist * dist));
-      gl_FragColor = vec4(col, cover);
-      #include <tonemapping_fragment>
-      #include <colorspace_fragment>
-    }`,
-});
-
-const PER_TIP = small ? 8 : 20;
-const leaves = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.6, 0.6), leafMat, tips.length * PER_TIP);
-{
-  const m = new THREE.Object3D();
-  let n = 0;
-  tips.forEach(t => {
-    for (let k = 0; k < PER_TIP; k++) {
-      // Fill a rounded volume around each twig, biased upward so the crown domes
-      m.position.set(t.x + (rand() - 0.5) * 1.5, t.y + (rand() - 0.3) * 1.4, t.z + (rand() - 0.5) * 1.5);
-      m.rotation.set(rand() * Math.PI, rand() * Math.PI * 2, rand() * Math.PI);
-      m.scale.setScalar(0.75 + rand() * 0.5);
-      m.updateMatrix();
-      leaves.setMatrixAt(n++, m.matrix);
-    }
-  });
-}
-leaves.frustumCulled = false;
-tree.add(leaves);
-
-// Shadow casters for the grass: canopy clusters (k-means over branch tips) plus the trunk
-const shadowLocal = (() => {
-  const k = 8;
-  const cs = Array.from({ length: k }, (_, i) => tips[Math.floor((i / k) * tips.length)].clone());
-  for (let it = 0; it < 6; it++) {
-    const sum = cs.map(() => new THREE.Vector3()), cnt = new Array(k).fill(0);
-    tips.forEach(t => {
-      let bi = 0, bd = Infinity;
-      cs.forEach((c, i) => { const d = c.distanceToSquared(t); if (d < bd) { bd = d; bi = i; } });
-      sum[bi].add(t); cnt[bi]++;
-    });
-    cs.forEach((c, i) => { if (cnt[i]) c.copy(sum[i].divideScalar(cnt[i])); });
-  }
-  const out = cs.map(c => {
-    let r = 0, n = 0;
-    tips.forEach(t => { const d = t.distanceTo(c); if (d < 2.2) { r += d; n++; } });
-    return new THREE.Vector4(c.x, c.y, c.z, (n ? r / n : 1) + 0.75);
-  });
-  out.push(new THREE.Vector4(0, 0.9, 0, 0.38), new THREE.Vector4(0, 1.9, 0, 0.34));
-  return out;
-})();
-
-const placeTree = () => {
-  const portrait = camera.aspect < 1;
-  tree.position.set(portrait ? 2.6 : 8.2, 0, portrait ? -29 : -31);
-  tree.updateMatrixWorld(true);
-  leafMat.uniforms.uCenter.value.copy(center).applyMatrix4(tree.matrixWorld);
-  grassMat.uniforms.uTrunk.value.set(tree.position.x, tree.position.z);
-  const v = new THREE.Vector3();
-  shadowLocal.forEach((s, i) => {
-    v.set(s.x, s.y, s.z).applyMatrix4(tree.matrixWorld);
-    grassMat.uniforms.uShadow.value[i].set(v.x, v.y, v.z, s.w);
-  });
-};
 
 /* ---------- Clippings ---------- */
 const CLIP = 500;
@@ -455,41 +222,22 @@ const spawnClip = (x, z, dx, dz) => {
   clipLife[i] = 1;
 };
 
-/* ---------- Post: depth of field, vignette, grain, tone mapping ---------- */
+/* ---------- Post (desktop): vignette, film grain, tone mapping ---------- */
 const rt = USE_POST ? new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }) : null;
-if (rt) rt.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
 const postGeo = new THREE.BufferGeometry();
 postGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
 postGeo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 2, 0, 0, 2], 2));
 const postMat = new THREE.ShaderMaterial({
-  defines: { TAPS: small ? 0 : 28 }, // lens blur is desktop-only; phones keep grain, vignette and tone mapping
   uniforms: {
-    tColor: { value: rt && rt.texture }, tDepth: { value: rt && rt.depthTexture },
-    uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: camera.near }, uFar: { value: camera.far },
-    uFocus: { value: 3.2 }, uAperture: { value: 3.5 }, uMaxBlur: { value: 3.5 }, uTime: { value: 0 },
+    tColor: { value: rt && rt.texture },
+    uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 },
   },
   vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
   fragmentShader: /* glsl */`
-    uniform sampler2D tColor; uniform sampler2D tDepth; uniform vec2 uRes;
-    uniform float uNear, uFar, uFocus, uAperture, uMaxBlur, uTime;
+    uniform sampler2D tColor; uniform vec2 uRes; uniform float uTime;
     varying vec2 vUv;
-    float lin(float z) { float n = z * 2.0 - 1.0; return 2.0 * uNear * uFar / (uFar + uNear - n * (uFar - uNear)); }
-    float coc(vec2 uv) { float d = lin(texture2D(tDepth, uv).r); return clamp(abs(d - uFocus) / d * uAperture, 0.0, uMaxBlur); }
     void main() {
-      vec3 acc = texture2D(tColor, vUv).rgb; float ws = 1.0;
-      #if TAPS > 0
-      float c = coc(vUv);
-      for (int i = 0; i < TAPS; i++) {
-        float fi = float(i) + 0.5;
-        float r = sqrt(fi / float(TAPS));
-        float a = fi * 2.39996;
-        vec2 suv = vUv + vec2(cos(a), sin(a)) * r * c / uRes;
-        float sc = coc(suv);
-        float w = clamp(sc - r * c + 1.0, 0.0, 1.0);
-        acc += texture2D(tColor, suv).rgb * w; ws += w;
-      }
-      #endif
-      vec3 col = acc / ws;
+      vec3 col = texture2D(tColor, vUv).rgb;
       vec2 q = vUv - 0.5;
       col *= 1.0 - dot(q, q) * 0.6;
       gl_FragColor = vec4(col, 1.0);
@@ -545,7 +293,7 @@ const useHdr = tex => {
 
   tex.mapping = THREE.EquirectangularReflectionMapping;
   scene.background = tex;
-  scene.backgroundIntensity = 1;
+  scene.backgroundIntensity = 0.8; // keeps cloud highlights from clipping to white
   scene.environment = pmrem.fromEquirectangular(tex).texture;
 };
 
@@ -590,7 +338,6 @@ const resize = () => {
   // Portrait screens: step back and widen so the lawn still reads as a lawn
   camera.fov = camera.aspect < 1 ? 46 : 32;
   camera.updateProjectionMatrix();
-  placeTree();
   if (rt) {
     rt.setSize(Math.floor(W * DPR), Math.floor(H * DPR));
     postMat.uniforms.uRes.value.set(W * DPR, H * DPR);
@@ -605,7 +352,6 @@ const ray = new THREE.Raycaster();
 const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const hitNow = new THREE.Vector3(), hitPrev = new THREE.Vector3();
 let pointerOn = false, hasPrev = false, cutTotal = 0, anyCut = false;
-let focusTarget = 3.2;
 const setNdc = e => {
   const r = canvas.getBoundingClientRect();
   ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -644,7 +390,7 @@ const clock = new THREE.Clock();
 let time = 0, paused = false, ready = false;
 // Adaptive quality: after warm-up, if frames average slower than ~40fps, step down.
 // Resolution never drops below 1x (that's what made the grass look pixelated); after that
-// it thins the grass and leaves, and as a last resort caps the frame rate at 30.
+// it thins the grass, and as a last resort caps the frame rate at 30.
 let perfFrames = -30, perfTime = 0, perfSettled = false, fpsCap = false, lastDraw = 0, thinned = false;
 const checkPerf = raw => {
   if (perfSettled) return;
@@ -661,7 +407,6 @@ const checkPerf = raw => {
   } else if (!thinned) {
     thinned = true;
     grassGeo.instanceCount = Math.floor(BLADES * 0.65);
-    leaves.count = Math.floor(leaves.count * 0.6);
   } else {
     fpsCap = true;
     perfSettled = true;
@@ -682,12 +427,11 @@ const frame = () => {
   const dt = Math.min(raw, 0.05);
   if (!reduce) time += dt;
 
-  // Camera: still, with a breath of parallax; scrolling lifts it like a drone
-  const prog = Math.min(1, window.scrollY / Math.max(1, hero.clientHeight));
+  // Camera: still, with a breath of parallax
   const px = reduce ? 0 : ndc.x * 0.05, py = reduce ? 0 : ndc.y * 0.025;
-  camera.position.set(CAM.x + px, CAM.y + py + prog * 1.4, CAM.z - prog * 0.6);
+  camera.position.set(CAM.x + px, CAM.y + py, CAM.z);
   // Portrait tilts down so the lawn, not the sky, fills the tall screen
-  camera.lookAt(LOOK.x, (camera.aspect < 1 ? -0.84 : LOOK.y) - prog * 1.2, LOOK.z);
+  camera.lookAt(LOOK.x, camera.aspect < 1 ? -0.84 : LOOK.y, LOOK.z);
   camera.updateMatrixWorld();
 
   // Mowing
@@ -698,12 +442,9 @@ const frame = () => {
       cursorOn = true;
       if (hasPrev) mow(hitPrev.x, hitPrev.z, hitNow.x, hitNow.z);
       hitPrev.copy(hitNow); hasPrev = true;
-      focusTarget = hitNow.distanceTo(camera.position);
     } else hasPrev = false;
   }
   grassMat.uniforms.uCursor.value.set(hitNow.x, cursorOn ? 1 : 0, hitNow.z);
-  // Focus eases toward where the visitor is mowing
-  postMat.uniforms.uFocus.value += (Math.min(focusTarget, 12) - postMat.uniforms.uFocus.value) * Math.min(1, dt * 3);
 
   // Regrow slowly
   if (anyCut) {
@@ -732,7 +473,6 @@ const frame = () => {
   clipGeo.attributes.position.needsUpdate = true;
 
   grassMat.uniforms.uTime.value = time;
-  leafMat.uniforms.uTime.value = time;
   postMat.uniforms.uTime.value = time;
   if (USE_POST) {
     renderer.setRenderTarget(rt);
